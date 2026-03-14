@@ -24,7 +24,7 @@ const APPLY_BUTTON_ID = 'open_application';
 const MODAL_ID = 'application_modal';
 const CLOSE_BUTTON_ID = 'close_ticket';
 const ARCHIVE_BUTTON_ID = 'archive_ticket';
-const ARCHIVE_CANCEL_BUTTON_ID = 'archive_cancel';
+const REOPEN_BUTTON_ID_PREFIX = 'reopen_ticket_';
 const CLOSE_CONFIRM_BUTTON_ID = 'close_confirm';
 const CLOSE_CANCEL_BUTTON_ID = 'close_cancel';
 const ARCHIVE_CATEGORY_NAME = 'anniversary-trial-archive';
@@ -76,15 +76,15 @@ client.on('interactionCreate', async (interaction) => {
     return;
   }
 
-  // Archive confirm button
+  // Archive button
   if (interaction.isButton() && interaction.customId === ARCHIVE_BUTTON_ID) {
     await handleArchive(interaction);
     return;
   }
 
-  // Archive cancel button
-  if (interaction.isButton() && interaction.customId === ARCHIVE_CANCEL_BUTTON_ID) {
-    await interaction.update({ content: '↩️ Archive cancelled.', components: [] });
+  // Reopen ticket button
+  if (interaction.isButton() && interaction.customId.startsWith(REOPEN_BUTTON_ID_PREFIX)) {
+    await handleReopenTicket(interaction);
     return;
   }
 });
@@ -272,14 +272,39 @@ async function handleCloseConfirmPrompt(interaction) {
 // ─── Close ticket ─────────────────────────────────────────────────────────────
 
 async function handleCloseTicket(interaction) {
-  // Find the applicant's member-level permission overwrite and remove it
   const channel = interaction.channel;
+
+  // Grab the applicant ID before removing their overwrite
   const applicantOverwrite = channel.permissionOverwrites.cache.find(
     (overwrite) => overwrite.type === 1 // 1 = member overwrite (not a role)
   );
+  const applicantId = applicantOverwrite?.id;
 
   if (applicantOverwrite) {
     await channel.permissionOverwrites.delete(applicantOverwrite.id);
+  }
+
+  // Find the original application message (the one with the Close Ticket button)
+  const messages = await channel.messages.fetch({ limit: 50 });
+  const originalMsg = messages.find((m) =>
+    m.components.some((row) => row.components.some((c) => c.customId === CLOSE_BUTTON_ID))
+  );
+
+  // Replace Close Ticket button with Reopen + Archive
+  const postCloseRow = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`${REOPEN_BUTTON_ID_PREFIX}${applicantId ?? ''}`)
+      .setLabel('Reopen Ticket')
+      .setEmoji('🔓')
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId(ARCHIVE_BUTTON_ID)
+      .setLabel('Archive')
+      .setStyle(ButtonStyle.Primary),
+  );
+
+  if (originalMsg) {
+    await originalMsg.edit({ components: [postCloseRow] });
   }
 
   const closedEmbed = new EmbedBuilder()
@@ -287,20 +312,51 @@ async function handleCloseTicket(interaction) {
     .setColor(0x992d22)
     .setTimestamp();
 
-  const archiveRow = new ActionRowBuilder().addComponents(
+  await interaction.message.delete();
+  await channel.send({ embeds: [closedEmbed] });
+  await interaction.deferUpdate();
+}
+
+// ─── Reopen ticket ────────────────────────────────────────────────────────────
+
+async function handleReopenTicket(interaction) {
+  const member = interaction.member;
+  const isGM = process.env.GM_ROLE_ID && member.roles.cache.has(process.env.GM_ROLE_ID);
+  const isOfficer = process.env.OFFICER_ROLE_ID && member.roles.cache.has(process.env.OFFICER_ROLE_ID);
+
+  if (!isGM && !isOfficer) {
+    await interaction.reply({ content: '❌ Only GMs and Officers can reopen tickets.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  const applicantId = interaction.customId.slice(REOPEN_BUTTON_ID_PREFIX.length);
+  const channel = interaction.channel;
+
+  if (applicantId) {
+    await channel.permissionOverwrites.edit(applicantId, {
+      ViewChannel: true,
+      SendMessages: true,
+      ReadMessageHistory: true,
+    });
+  }
+
+  // Restore the Close Ticket button
+  const closeRow = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-      .setCustomId(ARCHIVE_BUTTON_ID)
-      .setLabel('Archive')
-      .setStyle(ButtonStyle.Primary),
-    new ButtonBuilder()
-      .setCustomId(ARCHIVE_CANCEL_BUTTON_ID)
-      .setLabel('Cancel')
+      .setCustomId(CLOSE_BUTTON_ID)
+      .setLabel('Close Ticket')
+      .setEmoji('🔒')
       .setStyle(ButtonStyle.Secondary),
   );
 
-  await interaction.message.delete();
-  await interaction.channel.send({ embeds: [closedEmbed] });
-  await interaction.channel.send({ content: 'Archive the channel?', components: [archiveRow] });
+  await interaction.message.edit({ components: [closeRow] });
+
+  const reopenedEmbed = new EmbedBuilder()
+    .setDescription(`🔓 Application reopened by <@${interaction.user.id}>`)
+    .setColor(0x2ecc71)
+    .setTimestamp();
+
+  await channel.send({ embeds: [reopenedEmbed] });
   await interaction.deferUpdate();
 }
 
