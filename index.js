@@ -366,6 +366,12 @@ async function handleArchive(interaction) {
   const guild = interaction.guild;
   const channel = interaction.channel;
 
+  // Remove any remaining member-level permission overwrites (applicant)
+  const memberOverwrites = channel.permissionOverwrites.cache.filter((o) => o.type === 1);
+  for (const overwrite of memberOverwrites.values()) {
+    await channel.permissionOverwrites.delete(overwrite.id);
+  }
+
   // Find or create the archive category
   let archiveCategory = guild.channels.cache.find(
     (c) => c.type === ChannelType.GuildCategory && c.name.toLowerCase() === ARCHIVE_CATEGORY_NAME.toLowerCase()
@@ -378,10 +384,8 @@ async function handleArchive(interaction) {
     });
   }
 
-  // Move channel into the archive category
   await channel.setParent(archiveCategory.id, { lockPermissions: false });
-
-  await interaction.update({ content: '📦 Channel archived.', components: [] });
+  await interaction.deferUpdate();
 }
 
 // ─── Login ────────────────────────────────────────────────────────────────────
