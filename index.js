@@ -284,11 +284,9 @@ async function handleCloseTicket(interaction) {
     await channel.permissionOverwrites.delete(applicantOverwrite.id);
   }
 
-  // Find the original application message (the one with the Close Ticket button)
-  const messages = await channel.messages.fetch({ limit: 50 });
-  const originalMsg = messages.find((m) =>
-    m.components.some((row) => row.components.some((c) => c.customId === CLOSE_BUTTON_ID))
-  );
+  // Find the original application message — it's always the first message in the channel
+  const firstMessages = await channel.messages.fetch({ limit: 1, after: '0' });
+  const originalMsg = firstMessages.first() ?? null;
 
   // Replace Close Ticket button with Reopen + Archive
   const postCloseRow = new ActionRowBuilder().addComponents(
