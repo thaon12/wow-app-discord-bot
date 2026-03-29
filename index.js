@@ -133,6 +133,7 @@ async function handleApplyButton(interaction) {
     .setLabel('Please describe your experience with WoW.')
     .setStyle(TextInputStyle.Paragraph)
     .setRequired(true)
+    .setMaxLength(1018)
     .setPlaceholder('Tell us about your raiding history, guilds, etc.');
 
   const warcraftlogs = new TextInputBuilder()
@@ -140,6 +141,7 @@ async function handleApplyButton(interaction) {
     .setLabel('Link to any relevant warcraftlogs.')
     .setStyle(TextInputStyle.Paragraph)
     .setRequired(false)
+    .setMaxLength(1018)
     .setPlaceholder('https://www.warcraftlogs.com/...');
 
   modal.addComponents(
@@ -211,13 +213,16 @@ async function handleModalSubmit(interaction) {
     return;
   }
 
+  // Discord embed field values are capped at 1024 chars; wrap in code block (6 chars) = 1018 usable
+  const truncate = (str, max = 1018) => str.length > max ? str.slice(0, max - 3) + '...' : str;
+
   // Post the application as plain formatted text
   const applicationEmbed = new EmbedBuilder()
     .setColor(0x2b2d31)
     .addFields(
-      { name: 'Your name, class, and spec.', value: `\`\`\`${nameClassSpec}\`\`\`` },
-      { name: 'Please describe your experience with WoW.', value: `\`\`\`${experience}\`\`\`` },
-      { name: 'Link to any relevant warcraftlogs.', value: `\`\`\`${warcraftlogs}\`\`\`` },
+      { name: 'Your name, class, and spec.', value: `\`\`\`${truncate(nameClassSpec)}\`\`\`` },
+      { name: 'Please describe your experience with WoW.', value: `\`\`\`${truncate(experience)}\`\`\`` },
+      { name: 'Link to any relevant warcraftlogs.', value: `\`\`\`${truncate(warcraftlogs)}\`\`\`` },
     );
 
   const closeRow = new ActionRowBuilder().addComponents(
@@ -228,11 +233,17 @@ async function handleModalSubmit(interaction) {
       .setStyle(ButtonStyle.Secondary)
   );
 
-  await ticketChannel.send({
-    content: `Welcome <@${applicant.id}>! Thank you for the app - we'll respond as soon as possible!`,
-    embeds: [applicationEmbed],
-    components: [closeRow],
-  });
+  try {
+    await ticketChannel.send({
+      content: `Welcome <@${applicant.id}>! Thank you for the app - we'll respond as soon as possible!`,
+      embeds: [applicationEmbed],
+      components: [closeRow],
+    });
+  } catch (err) {
+    console.error('Failed to post application message:', err);
+    await interaction.editReply({ content: '❌ Your ticket was created but the application failed to post. Please contact an officer.' });
+    return;
+  }
 
   await interaction.editReply({
     content: `✅ Your application has been submitted! You can view it here: ${ticketChannel}`,
