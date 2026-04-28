@@ -11,11 +11,12 @@ const {
   PermissionFlagsBits,
   ChannelType,
   MessageFlags,
+  AttachmentBuilder,
 } = require('discord.js');
 require('dotenv').config();
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds],
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
 });
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -85,6 +86,24 @@ client.on('interactionCreate', async (interaction) => {
   // Reopen ticket button
   if (interaction.isButton() && interaction.customId.startsWith(REOPEN_BUTTON_ID_PREFIX)) {
     await handleReopenTicket(interaction);
+    return;
+  }
+
+  // /export_votes — exports poll results to CSV
+  if (interaction.isChatInputCommand() && interaction.commandName === 'export_votes') {
+    await handleExportVotes(interaction);
+    return;
+  }
+
+  // /who_responded — list voters
+  if (interaction.isChatInputCommand() && interaction.commandName === 'who_responded') {
+    await handleWhoResponded(interaction);
+    return;
+  }
+
+  // /missing — show who in a role didn't vote
+  if (interaction.isChatInputCommand() && interaction.commandName === 'missing') {
+    await handleMissing(interaction);
     return;
   }
 });
@@ -395,6 +414,168 @@ async function handleArchive(interaction) {
 
   await channel.setParent(archiveCategory.id, { lockPermissions: false });
   await interaction.deferUpdate();
+}
+
+// ─── Poll commands ───────────────────────────────────────────────────────────
+
+function hasPollAccess(member) {
+  const isGM = process.env.GM_ROLE_ID && member.roles.cache.has(process.env.GM_ROLE_ID);
+  const isOfficer = process.env.OFFICER_ROLE_ID && member.roles.cache.has(process.env.OFFICER_ROLE_ID);
+  return isGM || isOfficer;
+}
+
+async function fetchPollMessage(interaction, messageId) {
+  let message;
+  try {
+    message = await interaction.channel.messages.fetch(messageId);
+  } catch (err) {
+    await interaction.editReply("❌ Couldn't find that message in this channel.");
+    return null;
+  }
+  if (!message.poll) {
+    await interaction.editReply("❌ That message doesn't have a poll on it.");
+    return null;
+  }
+  return message;
+}
+
+async function getVotersPerAnswer(message) {
+  const results = new Map();
+  for (const [, answer] of message.poll.answers) {
+    const voters = new Set();
+    let after;
+    while (true) {
+      const batch = await answer.fetchVoters({ limit: 100, after });
+      if (batch.size === 0) break;
+      for (const [id] of batch) voters.add(id);
+      if (batch.size < 100) break;
+      after = batch.last().id;
+    }
+    const label = answer.text || `Answer ${answer.id}`;
+    results.set(label, voters);
+  }
+  return results;
+}
+
+function csvEscape(value) {
+  const s = String(value ?? '');
+  if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+async function handleExportVotes(interaction) {
+  if (!hasPollAccess(interaction.member)) {
+    await interaction.reply({ content: '❌ Only GMs and Officers can use this command.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  const messageId = interaction.options.getString('message_id');
+  const message = await fetchPollMessage(interaction, messageId);
+  if (!message) return;
+
+  const votersByAnswer = await getVotersPerAnswer(message);
+
+  const rows = [['User ID', 'Username', 'Display Name', 'Vote']];
+  for (const [answerText, userIds] of votersByAnswer) {
+    for (const uid of userIds) {
+      const member = await interaction.guild.members.fetch(uid).catch(() => null);
+      if (member) {
+        rows.push([uid, member.user.username, member.displayName, answerText]);
+      } else {
+        rows.push([uid, '(unknown)', '(unknown)', answerText]);
+      }
+    }
+  }
+
+  const csv = rows.map((r) => r.map(csvEscape).join(',')).join('\n');
+  const file = new AttachmentBuilder(Buffer.from(csv, 'utf-8'), { name: 'poll_votes.csv' });
+  await interaction.editReply({ content: '✅ Here are the poll results:', files: [file] });
+}
+
+async function handleWhoResponded(interaction) {
+  if (!hasPollAccess(interaction.member)) {
+    await interaction.reply({ content: '❌ Only GMs and Officers can use this command.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  const messageId = interaction.options.getString('message_id');
+  const message = await fetchPollMessage(interaction, messageId);
+  if (!message) return;
+
+  const votersByAnswer = await getVotersPerAnswer(message);
+  const allVoters = new Set();
+  for (const set of votersByAnswer.values()) {
+    for (const id of set) allVoters.add(id);
+  }
+
+  if (allVoters.size === 0) {
+    await interaction.editReply('Nobody has voted yet.');
+    return;
+  }
+
+  const names = [];
+  for (const uid of allVoters) {
+    const member = await interaction.guild.members.fetch(uid).catch(() => null);
+    names.push(member ? member.displayName : `User ${uid}`);
+  }
+  names.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+
+  const text = `**${names.length} people voted:**\n` + names.map((n) => `- ${n}`).join('\n');
+  if (text.length <= 2000) {
+    await interaction.editReply(text);
+  } else {
+    const file = new AttachmentBuilder(Buffer.from(text, 'utf-8'), { name: 'responders.txt' });
+    await interaction.editReply({ content: `${names.length} people voted (see attached):`, files: [file] });
+  }
+}
+
+async function handleMissing(interaction) {
+  if (!hasPollAccess(interaction.member)) {
+    await interaction.reply({ content: '❌ Only GMs and Officers can use this command.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  const messageId = interaction.options.getString('message_id');
+  const message = await fetchPollMessage(interaction, messageId);
+  if (!message) return;
+
+  const role = interaction.options.getRole('role');
+
+  const votersByAnswer = await getVotersPerAnswer(message);
+  const voterIds = new Set();
+  for (const set of votersByAnswer.values()) {
+    for (const id of set) voterIds.add(id);
+  }
+
+  // Make sure the member cache is populated
+  await interaction.guild.members.fetch();
+
+  const missingMembers = role.members.filter((m) => !voterIds.has(m.id) && !m.user.bot);
+  const missingArr = [...missingMembers.values()];
+
+  if (missingArr.length === 0) {
+    await interaction.editReply(`✅ Everyone in **${role.name}** has voted.`);
+    return;
+  }
+
+  missingArr.sort((a, b) => a.displayName.toLowerCase().localeCompare(b.displayName.toLowerCase()));
+  const lines = missingArr.map((m) => `- ${m.displayName}`);
+  const text = `**${missingArr.length} people in ${role.name} haven't voted:**\n` + lines.join('\n');
+
+  if (text.length <= 2000) {
+    await interaction.editReply(text);
+  } else {
+    const file = new AttachmentBuilder(Buffer.from(text, 'utf-8'), { name: 'missing.txt' });
+    await interaction.editReply({
+      content: `${missingArr.length} people in ${role.name} haven't voted (see attached):`,
+      files: [file],
+    });
+  }
 }
 
 // ─── Login ────────────────────────────────────────────────────────────────────
