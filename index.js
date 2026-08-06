@@ -12,12 +12,24 @@ const {
   ChannelType,
   MessageFlags,
   AttachmentBuilder,
+  Partials,
 } = require('discord.js');
 require('dotenv').config();
 
+const { attachStarTracker, handleStarsCommand } = require('./star-tracker');
+
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildMessageReactions,
+  ],
+  // Required so reactions on messages outside the cache still fire events.
+  partials: [Partials.Message, Partials.Channel, Partials.Reaction],
 });
+
+attachStarTracker(client);
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -104,6 +116,12 @@ client.on('interactionCreate', async (interaction) => {
   // /missing — show who in a role didn't vote
   if (interaction.isChatInputCommand() && interaction.commandName === 'missing') {
     await handleMissing(interaction);
+    return;
+  }
+
+  // /stars — star given/received counts
+  if (interaction.isChatInputCommand() && interaction.commandName === 'stars') {
+    await handleStarsCommand(interaction);
     return;
   }
 });
