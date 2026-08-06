@@ -6,6 +6,7 @@
 // to keep it registered.
 
 const { REST, Routes, SlashCommandBuilder } = require('discord.js');
+const { starsCommand } = require('./star-tracker');
 require('dotenv').config();
 
 const commands = [
@@ -33,6 +34,7 @@ const commands = [
     .addRoleOption((opt) =>
       opt.setName('role').setDescription('The role to check against').setRequired(true),
     ),
+  starsCommand,
 ].map((cmd) => cmd.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(process.env.BOT_TOKEN);
