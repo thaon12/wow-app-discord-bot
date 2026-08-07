@@ -33,10 +33,9 @@ const COUNT_SELF_STARS = false;
 // If this ever gets write-heavy, swap the two functions for better-sqlite3.
 
 function load() {
-  if (!fs.existsSync(COUNTS_FILE)) return { given: {}, received: {} };
+  if (!fs.existsSync(COUNTS_FILE)) return { given: {} };
   const data = JSON.parse(fs.readFileSync(COUNTS_FILE, 'utf8'));
   data.given = data.given || {};
-  data.received = data.received || {};
   return data;
 }
 
@@ -69,7 +68,6 @@ async function handle(reaction, user, delta) {
     if (!COUNT_SELF_STARS && user.id === authorId) return;
 
     bump(counts.given, user.id, delta);
-    if (authorId) bump(counts.received, authorId, delta);
   } catch (err) {
     console.error('star tracker:', err.message);
   }
@@ -99,7 +97,7 @@ const starsCommand = new SlashCommandBuilder()
   .addSubcommand((sub) =>
     sub
       .setName('user')
-      .setDescription('Stars given and received by one person')
+      .setDescription('Stars given by one person')
       .addUserOption((opt) => opt.setName('target').setDescription('Who to look up').setRequired(false))
   )
   .addSubcommand((sub) =>
@@ -112,15 +110,11 @@ async function handleStarsCommand(interaction) {
   if (sub === 'user') {
     const target = interaction.options.getUser('target') || interaction.user;
     const given = counts.given[target.id] || 0;
-    const received = counts.received[target.id] || 0;
 
     const embed = new EmbedBuilder()
       .setTitle(target.username)
       .setThumbnail(target.displayAvatarURL())
-      .addFields(
-        { name: 'Stars given', value: String(given), inline: true },
-        { name: 'Stars received', value: String(received), inline: true }
-      )
+      .addFields({ name: 'Stars given', value: String(given), inline: true })
       .setColor(0xf1c40f);
 
     await interaction.reply({ embeds: [embed] });
