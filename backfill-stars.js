@@ -2,7 +2,7 @@
  * backfill-stars.js
  *
  * Walks guild message history and counts how many times each user has given
- * (and received) the star reaction. Standalone: run this separately from the
+ * the star reaction. Standalone: run this separately from the
  * bot, not inside the pm2 process.
  *
  * Setup:
@@ -42,7 +42,6 @@ if (!STAR_EMOJI_ID || !GUILD_ID || !TOKEN) {
 
 let progress = {
   given: {},     // userId -> count of stars they gave
-  received: {},  // userId -> count of stars their messages got
   cursors: {},   // channelId -> oldest message id processed so far
   done: [],      // channelIds fully walked
   scanned: 0,    // messages enumerated
@@ -128,13 +127,13 @@ async function walkChannel(channel) {
       if (!star) continue;
 
       progress.starred++;
+      // Only needed to skip self-stars.
       const authorId = msg.author ? msg.author.id : null;
       const reactors = await fetchAllReactors(star);
 
       for (const userId of reactors) {
         if (!COUNT_SELF_STARS && userId === authorId) continue;
         progress.given[userId] = (progress.given[userId] || 0) + 1;
-        if (authorId) progress.received[authorId] = (progress.received[authorId] || 0) + 1;
       }
     }
 
