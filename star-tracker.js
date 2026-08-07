@@ -123,15 +123,15 @@ function attachStarTracker(client) {
 
 const starsCommand = new SlashCommandBuilder()
   .setName('stars')
-  .setDescription('Show star counts')
+  .setDescription('Show kek counts')
   .addSubcommand((sub) =>
     sub
       .setName('user')
-      .setDescription('Stars given by one person')
+      .setDescription('Keks given by one person')
       .addUserOption((opt) => opt.setName('target').setDescription('Who to look up').setRequired(false))
   )
   .addSubcommand((sub) =>
-    sub.setName('top').setDescription('Leaderboard of the biggest star givers')
+    sub.setName('top').setDescription('Leaderboard of the biggest kek givers')
   );
 
 async function handleStarsCommand(interaction) {
@@ -144,7 +144,7 @@ async function handleStarsCommand(interaction) {
     const embed = new EmbedBuilder()
       .setTitle(target.username)
       .setThumbnail(target.displayAvatarURL())
-      .addFields({ name: 'Stars given', value: String(given), inline: true })
+      .addFields({ name: 'Keks given', value: String(given), inline: true })
       .setColor(0xf1c40f);
 
     await interaction.reply({ embeds: [embed] });
@@ -152,17 +152,31 @@ async function handleStarsCommand(interaction) {
   }
 
   if (sub === 'top') {
-    const top = Object.entries(totals()).sort((a, b) => b[1] - a[1]).slice(0, 10);
+    const top = Object.entries(totals()).sort((a, b) => b[1] - a[1]).slice(0, 20);
 
     if (!top.length) {
-      await interaction.reply({ content: 'No stars recorded yet.', ephemeral: true });
+      await interaction.reply({ content: 'No keks recorded yet.', ephemeral: true });
       return;
     }
 
-    const lines = top.map(([id, n], i) => `**${i + 1}.** <@${id}> \u2014 ${n}`);
+    const line = ([id, n], i) => `**${i + 1}.** <@${id}> \u2014 ${n}`;
+
+    // Two inline fields sit side by side, 1-10 on the left and 11-20 on the
+    // right. The second field only exists once there are more than 10 people.
+    const fields = [
+      { name: '\u200b', value: top.slice(0, 10).map(line).join('\n'), inline: true },
+    ];
+    if (top.length > 10) {
+      fields.push({
+        name: '\u200b',
+        value: top.slice(10, 20).map((entry, i) => line(entry, i + 10)).join('\n'),
+        inline: true,
+      });
+    }
+
     const embed = new EmbedBuilder()
-      .setTitle('Top star givers')
-      .setDescription(lines.join('\n'))
+      .setTitle('Top kek givers')
+      .addFields(fields)
       .setColor(0xf1c40f);
 
     await interaction.reply({ embeds: [embed] });
