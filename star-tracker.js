@@ -43,12 +43,11 @@ function load() {
 let counts = load();
 let dirty = false;
 
-// Batched writes so a reaction storm doesn't hammer the SD card.
-setInterval(() => {
+function flush() {
   if (!dirty) return;
   fs.writeFileSync(COUNTS_FILE, JSON.stringify(counts, null, 2));
   dirty = false;
-}, 10_000);
+}
 
 // ─── Handlers ────────────────────────────────────────────────────────────────
 
@@ -79,6 +78,16 @@ async function handle(reaction, user, delta) {
 function attachStarTracker(client) {
   client.on('messageReactionAdd', (reaction, user) => handle(reaction, user, 1));
   client.on('messageReactionRemove', (reaction, user) => handle(reaction, user, -1));
+
+  // Batched writes so a reaction storm doesn't hammer the SD card. Started here
+  // rather than at module load, so scripts that only import starsCommand (like
+  // register.js) aren't held open by a live timer.
+  const timer = setInterval(flush, 10_000);
+  timer.unref();
+
+  // Don't lose up to 10 seconds of counts on a pm2 restart.
+  process.once('SIGINT', () => { flush(); process.exit(0); });
+  process.once('SIGTERM', () => { flush(); process.exit(0); });
 }
 
 // ─── Slash command ───────────────────────────────────────────────────────────
