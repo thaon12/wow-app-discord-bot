@@ -10,7 +10,7 @@
  *   2. node backfill-stars.js --channel=<id>     # test on one channel first
  *   3. node backfill-stars.js                    # full run
  *
- * Progress is written to star-progress.json after every batch, so a crash or a
+ * Progress is written to star-backfill.json after every batch, so a crash or a
  * reboot resumes where it left off. Delete that file to start over.
  */
 
@@ -25,7 +25,9 @@ const STAR_EMOJI_ID = process.env.STAR_EMOJI_ID;
 const GUILD_ID = process.env.GUILD_ID;
 const TOKEN = process.env.BOT_TOKEN;
 
-const PROGRESS_FILE = path.join(__dirname, 'star-progress.json');
+// Its own file. The live tracker owns star-live.json and never touches this
+// one, so the two processes can't overwrite each other. /stars sums both.
+const PROGRESS_FILE = path.join(__dirname, 'star-backfill.json');
 const COUNT_SELF_STARS = false; // set true to count starring your own message
 const COUNT_BOT_REACTORS = false;
 
@@ -304,7 +306,7 @@ client.once('ready', async () => {
 
   channelCount = targets.length;
 
-  // Build the denominator. Cached in star-progress.json so a resume skips it.
+  // Build the denominator. Cached in star-backfill.json so a resume skips it.
   console.log(`Sizing ${targets.length} channels (a few requests each)...`);
   for (const c of targets) {
     if (progress.sizes[c.id] === undefined) {
