@@ -1,8 +1,9 @@
 /**
  * star-tracker.js
  *
- * Live star counting for the main bot. Merge into index.js, or require it and
- * call attachStarTracker(client).
+ * Live star counting for the main bot. Writes star-live.json and reads
+ * star-backfill.json, so it never collides with a running backfill.
+ * Merge into index.js, or require it and call attachStarTracker(client).
  *
  * Two changes are needed in your existing client construction:
  *
@@ -25,11 +26,14 @@ const path = require('path');
 const { EmbedBuilder, SlashCommandBuilder } = require('discord.js');
 
 const STAR_EMOJI_ID = process.env.STAR_EMOJI_ID;
-const COUNTS_FILE = path.join(__dirname, 'star-progress.json');
+// The live tracker is the only writer of this file. The backfill owns
+// star-backfill.json. Splitting them means neither can clobber the other.
+const COUNTS_FILE = path.join(__dirname, 'star-live.json');
+const BACKFILL_FILE = path.join(__dirname, 'star-backfill.json');
 const COUNT_SELF_STARS = false;
 
 // ─── Storage ─────────────────────────────────────────────────────────────────
-// Shares the file the backfill writes, so live counts stack on top of history.
+// Live counts only. Historical counts come from the backfill file at read time.
 // If this ever gets write-heavy, swap the two functions for better-sqlite3.
 
 function load() {
@@ -41,6 +45,32 @@ function load() {
 
 let counts = load();
 let dirty = false;
+
+// Backfill totals, re-read when the file changes on disk so a finished run
+// shows up without a bot restart.
+let backfillCache = { mtime: 0, given: {} };
+
+function backfillGiven() {
+  try {
+    const stat = fs.statSync(BACKFILL_FILE);
+    if (stat.mtimeMs !== backfillCache.mtime) {
+      const data = JSON.parse(fs.readFileSync(BACKFILL_FILE, 'utf8'));
+      backfillCache = { mtime: stat.mtimeMs, given: data.given || {} };
+    }
+  } catch {
+    backfillCache = { mtime: 0, given: {} };
+  }
+  return backfillCache.given;
+}
+
+/** Live plus historical, merged per user. */
+function totals() {
+  const merged = { ...backfillGiven() };
+  for (const [id, n] of Object.entries(counts.given)) {
+    merged[id] = (merged[id] || 0) + n;
+  }
+  return merged;
+}
 
 function flush() {
   if (!dirty) return;
@@ -109,7 +139,7 @@ async function handleStarsCommand(interaction) {
 
   if (sub === 'user') {
     const target = interaction.options.getUser('target') || interaction.user;
-    const given = counts.given[target.id] || 0;
+    const given = totals()[target.id] || 0;
 
     const embed = new EmbedBuilder()
       .setTitle(target.username)
@@ -122,7 +152,7 @@ async function handleStarsCommand(interaction) {
   }
 
   if (sub === 'top') {
-    const top = Object.entries(counts.given).sort((a, b) => b[1] - a[1]).slice(0, 10);
+    const top = Object.entries(totals()).sort((a, b) => b[1] - a[1]).slice(0, 10);
 
     if (!top.length) {
       await interaction.reply({ content: 'No stars recorded yet.', ephemeral: true });
