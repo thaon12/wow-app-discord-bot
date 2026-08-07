@@ -114,6 +114,9 @@ const sizes = new Map(rows.filter((r) => r.size != null).map((r) => [r.channel_i
 // Display counters only. The database is the source of truth.
 let scanned = 0;
 let starred = 0;
+// Estimated messages in channels finished by earlier runs. Counted toward the
+// percentage so a resumed run doesn't report 0% with 80% of the work behind it.
+let resumedMessages = 0;
 const startKeks = stmts.totalKeks.get().n;
 
 if (doneChannels.size || cursors.size) {
@@ -204,7 +207,7 @@ async function estimateSize(channel) {
 
 const runStart = Date.now();
 let estimatedTotal = 0;
-let channelsDone = 0;
+let channelsDone = doneChannels.size;
 let channelCount = 0;
 const active = new Set();
 let lastPrint = 0;
@@ -225,6 +228,7 @@ function printStatus(force = false) {
   if (!force && now - lastPrint < 5000) return;
   lastPrint = now;
 
+  const overall = resumedMessages + scanned;
   samples.push({ t: now, n: scanned });
   while (samples.length > 2 && now - samples[0].t > 60000) samples.shift();
 
@@ -234,8 +238,8 @@ function printStatus(force = false) {
     ? (scanned - first.n) / (windowMs / 1000)
     : scanned / Math.max(1, (now - runStart) / 1000);
 
-  const pct = estimatedTotal ? Math.min(99.9, (scanned / estimatedTotal) * 100) : 0;
-  const remaining = Math.max(0, estimatedTotal - scanned);
+  const pct = estimatedTotal ? Math.min(99.9, (overall / estimatedTotal) * 100) : 0;
+  const remaining = Math.max(0, estimatedTotal - overall);
   const eta = perSec > 0 ? (remaining / perSec) * 1000 : NaN;
 
   const names = [...active].slice(0, 2).join(', ') + (active.size > 2 ? ` +${active.size - 2}` : '');
@@ -243,7 +247,7 @@ function printStatus(force = false) {
   console.log(
     `[${pct.toFixed(1).padStart(5)}%] ` +
     `ch ${channelsDone}/${channelCount} ${names} | ` +
-    `${scanned.toLocaleString()} / ~${estimatedTotal.toLocaleString()} msgs | ` +
+    `${overall.toLocaleString()} / ~${estimatedTotal.toLocaleString()} msgs | ` +
     `${starred.toLocaleString()} kek'd | ` +
     `${Math.round(perSec)}/s | elapsed ${fmtDuration(now - runStart)} | ETA ${fmtDuration(eta)}`
   );
@@ -393,6 +397,7 @@ client.once('ready', async () => {
       sizes.set(c.id, n);
     }
     estimatedTotal += sizes.get(c.id);
+    if (doneChannels.has(c.id)) resumedMessages += sizes.get(c.id);
   }, 4);
 
   console.log(`Estimated ~${estimatedTotal.toLocaleString()} messages across ${targets.length} channels.\n`);
@@ -412,6 +417,7 @@ client.once('ready', async () => {
           sizes.set(th.id, n);
         }
         estimatedTotal += sizes.get(th.id);
+        if (doneChannels.has(th.id)) resumedMessages += sizes.get(th.id);
       }
       for (const thread of threads) {
         if (canRead(thread, me)) await walkChannel(thread);
@@ -423,7 +429,7 @@ client.once('ready', async () => {
   printStatus(true);
   const mins = Math.round((Date.now() - runStart) / 60000);
   const total = stmts.totalKeks.get().n;
-  console.log(`\nFinished in ${mins} min. ${scanned.toLocaleString()} messages, ${starred.toLocaleString()} kek'd, ${total.toLocaleString()} kek rows.`);
+  console.log(`\nFinished in ${mins} min. ${scanned.toLocaleString()} messages this run, ${starred.toLocaleString()} kek'd, ${total.toLocaleString()} kek rows total.`);
 
   console.log('\nTop 20 kek givers:');
   for (const row of stmts.topGivers.all(20)) console.log(`  ${row.n}\t${row.giver_id}`);
