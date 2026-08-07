@@ -70,6 +70,27 @@ async function limited(fn) {
   }
 }
 
+// Discord returns transient 5xx under load. Retrying with backoff turns a
+// blip into a pause instead of losing the run.
+const RETRY_STATUS = new Set([429, 500, 502, 503, 504]);
+const MAX_ATTEMPTS = 6;
+
+async function withRetry(fn, label) {
+  let wait = 1000;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const retryable = RETRY_STATUS.has(err.status) || err.code === 'ECONNRESET' ||
+        err.code === 'ETIMEDOUT' || err.code === 'EAI_AGAIN' || err.name === 'AbortError';
+      if (!retryable || attempt >= MAX_ATTEMPTS) throw err;
+      console.warn(`  ~ ${label}: ${err.status || err.code}, retry ${attempt}/${MAX_ATTEMPTS - 1} in ${wait / 1000}s`);
+      await new Promise((r) => setTimeout(r, wait));
+      wait = Math.min(wait * 2, 60000);
+    }
+  }
+}
+
 /** Run fn over items with at most `concurrency` active at once. */
 async function pMap(items, fn, concurrency) {
   const iter = items[Symbol.iterator]();
@@ -102,6 +123,12 @@ if (doneChannels.size || cursors.size) {
 process.on('SIGINT', () => {
   console.log('\nInterrupted. Progress is committed up to the last completed page.');
   process.exit(0);
+});
+
+// discord.js emits 'error' on the client for some failures, which is fatal if
+// unhandled. Log and keep going; the retry logic covers the recoverable cases.
+process.on('unhandledRejection', (err) => {
+  console.warn(`  ! unhandled: ${err && err.message}`);
 });
 
 // ─── Client ──────────────────────────────────────────────────────────────────
@@ -146,7 +173,10 @@ async function estimateSize(channel) {
     const at = created + segment * (i + 0.5);
     let batch;
     try {
-      batch = await limited(() => channel.messages.fetch({ limit: 100, around: idAt(at) }));
+      batch = await withRetry(
+        () => limited(() => channel.messages.fetch({ limit: 100, around: idAt(at) })),
+        `size probe ${channel.name}`
+      );
     } catch {
       return;
     }
@@ -233,7 +263,10 @@ async function fetchAllReactors(reaction) {
   const ids = [];
   let after;
   while (true) {
-    const users = await limited(() => reaction.users.fetch({ limit: 100, ...(after && { after }) }));
+    const users = await withRetry(
+      () => limited(() => reaction.users.fetch({ limit: 100, ...(after && { after }) })),
+      `reactors ${reaction.message.id}`
+    );
     if (!users.size) break;
     for (const user of users.values()) {
       if (!COUNT_BOT_REACTORS && user.bot) continue;
@@ -256,7 +289,10 @@ async function walkChannel(channel) {
     while (true) {
       let batch;
       try {
-        batch = await limited(() => channel.messages.fetch({ limit: 100, ...(before && { before }) }));
+        batch = await withRetry(
+          () => limited(() => channel.messages.fetch({ limit: 100, ...(before && { before }) })),
+          `messages ${channel.name}`
+        );
       } catch (err) {
         console.warn(`  ! ${channel.name}: ${err.message}, skipping channel`);
         break;
@@ -275,11 +311,16 @@ async function walkChannel(channel) {
 
       const pageRows = [];
       await pMap(starredMsgs, async ({ msg, star }) => {
-        const authorId = msg.author ? msg.author.id : null;
-        const reactors = await fetchAllReactors(star);
-        for (const userId of reactors) {
-          if (!COUNT_SELF_STARS && userId === authorId) continue;
-          pageRows.push({ messageId: msg.id, giverId: userId, channelId: channel.id, authorId });
+        try {
+          const authorId = msg.author ? msg.author.id : null;
+          const reactors = await fetchAllReactors(star);
+          for (const userId of reactors) {
+            if (!COUNT_SELF_STARS && userId === authorId) continue;
+            pageRows.push({ messageId: msg.id, giverId: userId, channelId: channel.id, authorId });
+          }
+        } catch (err) {
+          // One unreachable message shouldn't cost the whole run.
+          console.warn(`  ! reactors ${msg.id}: ${err.message}, skipped`);
         }
       }, 8);
 
@@ -390,4 +431,27 @@ client.once('ready', async () => {
   client.destroy();
 });
 
-client.login(TOKEN);
+// The 503 that killed an earlier run surfaced here as a fatal 'error' event.
+client.on('error', (err) => console.warn(`  ! client error: ${err.message}`));
+
+// Login gets its own retry with a longer ceiling. Discord throttles repeated
+// connection attempts per token, so a restarted run can be refused at
+// /gateway/bot for several minutes before it's let back in. Waiting is the
+// only fix, and the script may as well do the waiting.
+(async () => {
+  let wait = 15000;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await client.login(TOKEN);
+      return;
+    } catch (err) {
+      if (attempt >= 10) {
+        console.error(`Login failed after ${attempt} attempts: ${err.message}`);
+        process.exit(1);
+      }
+      console.warn(`Login failed (${err.status || err.code || err.message}), retry ${attempt}/9 in ${wait / 1000}s`);
+      await new Promise((r) => setTimeout(r, wait));
+      wait = Math.min(wait * 2, 300000);
+    }
+  }
+})();
