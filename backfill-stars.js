@@ -15,13 +15,12 @@
  *   --inflight=<n>     max simultaneous Discord requests (default 10)
  *   --channels=<n>     channels walked in parallel (default 3)
  *
- * Progress is written to star-backfill.json, so a crash or a reboot resumes
- * where it left off. Delete that file to start over.
+ * Progress and results go to keks.db. A crash or a reboot resumes where it left
+ * off, and re-walked pages can't double count. Delete keks.db to start over.
  */
 
-const fs = require('fs');
-const path = require('path');
 const { Client, GatewayIntentBits, Options, ChannelType, PermissionsBitField } = require('discord.js');
+const { stmts, commitPage, msOf, idAt } = require('./kek-db');
 require('dotenv').config();
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -30,9 +29,6 @@ const STAR_EMOJI_ID = process.env.STAR_EMOJI_ID;
 const GUILD_ID = process.env.GUILD_ID;
 const TOKEN = process.env.BOT_TOKEN;
 
-// Its own file. The live tracker owns star-live.json and never touches this
-// one, so the two processes can't overwrite each other. /stars sums both.
-const PROGRESS_FILE = path.join(__dirname, 'star-backfill.json');
 const COUNT_SELF_STARS = false; // set true to count starring your own message
 const COUNT_BOT_REACTORS = false;
 
@@ -86,45 +82,25 @@ async function pMap(items, fn, concurrency) {
 }
 
 // ─── Progress ────────────────────────────────────────────────────────────────
+// Cursors, per-channel size estimates and the kek rows all live in keks.db.
+// Nothing is held in memory that a crash would lose.
 
-let progress = {
-  given: {},     // userId -> count of stars they gave
-  cursors: {},   // channelId -> oldest message id processed so far
-  done: [],      // channelIds fully walked
-  scanned: 0,    // messages enumerated
-  starred: 0,    // messages with at least one star
-  sizes: {},     // channelId -> estimated message count, cached across resumes
-};
+const rows = stmts.allProgress.all();
+const doneChannels = new Set(rows.filter((r) => r.done).map((r) => r.channel_id));
+const cursors = new Map(rows.filter((r) => r.cursor).map((r) => [r.channel_id, r.cursor]));
+const sizes = new Map(rows.filter((r) => r.size != null).map((r) => [r.channel_id, r.size]));
 
-if (fs.existsSync(PROGRESS_FILE)) {
-  progress = JSON.parse(fs.readFileSync(PROGRESS_FILE, 'utf8'));
-  console.log(`Resuming: ${progress.scanned.toLocaleString()} messages scanned, ${progress.done.length} channels done.`);
+// Display counters only. The database is the source of truth.
+let scanned = 0;
+let starred = 0;
+const startKeks = stmts.totalKeks.get().n;
+
+if (doneChannels.size || cursors.size) {
+  console.log(`Resuming: ${doneChannels.size} channels done, ${startKeks.toLocaleString()} keks already recorded.`);
 }
-
-const startScanned = progress.scanned;
-
-// Throttled so faster scanning doesn't turn into constant SD card writes.
-let lastSave = 0;
-let saveQueued = false;
-
-function saveProgress(force = false) {
-  const now = Date.now();
-  if (!force && now - lastSave < 5000) {
-    saveQueued = true;
-    return;
-  }
-  lastSave = now;
-  saveQueued = false;
-  fs.writeFileSync(PROGRESS_FILE, JSON.stringify(progress, null, 2));
-}
-
-setInterval(() => {
-  if (saveQueued) saveProgress(true);
-}, 5000).unref();
 
 process.on('SIGINT', () => {
-  console.log('\nInterrupted, saving progress.');
-  saveProgress(true);
+  console.log('\nInterrupted. Progress is committed up to the last completed page.');
   process.exit(0);
 });
 
@@ -147,25 +123,16 @@ const client = new Client({
 // density at points across each channel's history and extrapolate. Threads are
 // exact, since Discord does expose a count on those.
 
-const DISCORD_EPOCH = 1420070400000n;
 // Tested against simulated bursty channels: 4 probes was off by ~150%, 16 lands
-// around ~30%. This only feeds the progress display; star counts are exact.
+// around ~30%. This only feeds the progress display; kek counts are exact.
 const PROBES = 16;
-
-function snowflakeToMs(id) {
-  return Number((BigInt(id) >> 22n) + DISCORD_EPOCH);
-}
-
-function msToSnowflake(ms) {
-  return String((BigInt(Math.floor(ms)) - DISCORD_EPOCH) << 22n);
-}
 
 async function estimateSize(channel) {
   // Threads carry a real count. Use it.
   const exact = channel.totalMessageSent ?? channel.messageCount;
   if (typeof exact === 'number') return exact;
 
-  const created = channel.createdTimestamp || snowflakeToMs(channel.id);
+  const created = channel.createdTimestamp || msOf(channel.id);
   const now = Date.now();
   const span = Math.max(1, now - created);
   const segment = span / PROBES;
@@ -179,7 +146,7 @@ async function estimateSize(channel) {
     const at = created + segment * (i + 0.5);
     let batch;
     try {
-      batch = await limited(() => channel.messages.fetch({ limit: 100, around: msToSnowflake(at) }));
+      batch = await limited(() => channel.messages.fetch({ limit: 100, around: idAt(at) }));
     } catch {
       return;
     }
@@ -228,17 +195,17 @@ function printStatus(force = false) {
   if (!force && now - lastPrint < 5000) return;
   lastPrint = now;
 
-  samples.push({ t: now, n: progress.scanned });
+  samples.push({ t: now, n: scanned });
   while (samples.length > 2 && now - samples[0].t > 60000) samples.shift();
 
   const first = samples[0];
   const windowMs = now - first.t;
   const perSec = windowMs > 1000
-    ? (progress.scanned - first.n) / (windowMs / 1000)
-    : (progress.scanned - startScanned) / Math.max(1, (now - runStart) / 1000);
+    ? (scanned - first.n) / (windowMs / 1000)
+    : scanned / Math.max(1, (now - runStart) / 1000);
 
-  const pct = estimatedTotal ? Math.min(99.9, (progress.scanned / estimatedTotal) * 100) : 0;
-  const remaining = Math.max(0, estimatedTotal - progress.scanned);
+  const pct = estimatedTotal ? Math.min(99.9, (scanned / estimatedTotal) * 100) : 0;
+  const remaining = Math.max(0, estimatedTotal - scanned);
   const eta = perSec > 0 ? (remaining / perSec) * 1000 : NaN;
 
   const names = [...active].slice(0, 2).join(', ') + (active.size > 2 ? ` +${active.size - 2}` : '');
@@ -246,8 +213,8 @@ function printStatus(force = false) {
   console.log(
     `[${pct.toFixed(1).padStart(5)}%] ` +
     `ch ${channelsDone}/${channelCount} ${names} | ` +
-    `${progress.scanned.toLocaleString()} / ~${estimatedTotal.toLocaleString()} msgs | ` +
-    `${progress.starred.toLocaleString()} starred | ` +
+    `${scanned.toLocaleString()} / ~${estimatedTotal.toLocaleString()} msgs | ` +
+    `${starred.toLocaleString()} kek'd | ` +
     `${Math.round(perSec)}/s | elapsed ${fmtDuration(now - runStart)} | ETA ${fmtDuration(eta)}`
   );
 }
@@ -280,10 +247,10 @@ async function fetchAllReactors(reaction) {
 
 /** Walk one channel or thread from its cursor backwards to the beginning. */
 async function walkChannel(channel) {
-  if (progress.done.includes(channel.id)) return;
+  if (doneChannels.has(channel.id)) return;
 
   active.add(channel.name);
-  let before = progress.cursors[channel.id] || undefined;
+  let before = cursors.get(channel.id) || undefined;
 
   try {
     while (true) {
@@ -300,32 +267,36 @@ async function walkChannel(channel) {
       // Enumeration has to stay sequential, since each page depends on the
       // previous cursor. The reactor lookups don't, and they're the bulk of
       // the requests, so fire them together.
-      const starred = [...batch.values()]
+      const starredMsgs = [...batch.values()]
         .map((msg) => ({ msg, star: msg.reactions.cache.get(STAR_EMOJI_ID) }))
         .filter((x) => x.star);
 
-      progress.starred += starred.length;
+      starred += starredMsgs.length;
 
-      await pMap(starred, async ({ msg, star }) => {
-        const authorId = msg.author ? msg.author.id : null; // only to skip self-stars
+      const pageRows = [];
+      await pMap(starredMsgs, async ({ msg, star }) => {
+        const authorId = msg.author ? msg.author.id : null;
         const reactors = await fetchAllReactors(star);
         for (const userId of reactors) {
           if (!COUNT_SELF_STARS && userId === authorId) continue;
-          progress.given[userId] = (progress.given[userId] || 0) + 1;
+          pageRows.push({ messageId: msg.id, giverId: userId, channelId: channel.id, authorId });
         }
       }, 8);
 
-      progress.scanned += batch.size;
+      scanned += batch.size;
       before = batch.last().id;
-      progress.cursors[channel.id] = before;
-      saveProgress();
+
+      // Rows and cursor commit together, so a crash mid-page rolls back to the
+      // start of the page rather than leaving a half-recorded one.
+      commitPage(pageRows, channel.id, before);
+      cursors.set(channel.id, before);
       printStatus();
 
       if (batch.size < 100) break;
     }
 
-    progress.done.push(channel.id);
-    saveProgress(true);
+    stmts.setDone.run(channel.id);
+    doneChannels.add(channel.id);
   } finally {
     active.delete(channel.name);
     channelsDone++;
@@ -375,12 +346,13 @@ client.once('ready', async () => {
 
   console.log(`Sizing ${targets.length} channels...`);
   await pMap(targets, async (c) => {
-    if (progress.sizes[c.id] === undefined) {
-      progress.sizes[c.id] = c.type === ChannelType.GuildForum ? 0 : await estimateSize(c);
+    if (!sizes.has(c.id)) {
+      const n = c.type === ChannelType.GuildForum ? 0 : await estimateSize(c);
+      stmts.setSize.run(c.id, n);
+      sizes.set(c.id, n);
     }
-    estimatedTotal += progress.sizes[c.id];
+    estimatedTotal += sizes.get(c.id);
   }, 4);
-  saveProgress(true);
 
   console.log(`Estimated ~${estimatedTotal.toLocaleString()} messages across ${targets.length} channels.\n`);
 
@@ -393,10 +365,12 @@ client.once('ready', async () => {
     if (threads.length) {
       channelCount += threads.length;
       for (const th of threads) {
-        if (progress.sizes[th.id] === undefined) {
-          progress.sizes[th.id] = await estimateSize(th);
+        if (!sizes.has(th.id)) {
+          const n = await estimateSize(th);
+          stmts.setSize.run(th.id, n);
+          sizes.set(th.id, n);
         }
-        estimatedTotal += progress.sizes[th.id];
+        estimatedTotal += sizes.get(th.id);
       }
       for (const thread of threads) {
         if (canRead(thread, me)) await walkChannel(thread);
@@ -407,13 +381,12 @@ client.once('ready', async () => {
 
   printStatus(true);
   const mins = Math.round((Date.now() - runStart) / 60000);
-  console.log(`\nFinished in ${mins} min. ${progress.scanned.toLocaleString()} messages, ${progress.starred.toLocaleString()} starred.`);
+  const total = stmts.totalKeks.get().n;
+  console.log(`\nFinished in ${mins} min. ${scanned.toLocaleString()} messages, ${starred.toLocaleString()} kek'd, ${total.toLocaleString()} kek rows.`);
 
-  const top = Object.entries(progress.given).sort((a, b) => b[1] - a[1]).slice(0, 20);
-  console.log('\nTop 20 star givers:');
-  for (const [userId, count] of top) console.log(`  ${count}\t${userId}`);
+  console.log('\nTop 20 kek givers:');
+  for (const row of stmts.topGivers.all(20)) console.log(`  ${row.n}\t${row.giver_id}`);
 
-  saveProgress(true);
   client.destroy();
 });
 
