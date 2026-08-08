@@ -50,6 +50,10 @@ if (!cols.includes('author_id')) {
   db.exec('ALTER TABLE keks ADD COLUMN author_id TEXT');
 }
 
+// /stars inspect filters on author_id, so this index now pays for itself.
+// Created after the ALTER above, since the column has to exist first.
+db.exec('CREATE INDEX IF NOT EXISTS idx_keks_author ON keks(author_id)');
+
 // ─── Snowflakes ──────────────────────────────────────────────────────────────
 
 const DISCORD_EPOCH = 1420070400000n;
@@ -79,6 +83,19 @@ const stmts = {
     'SELECT giver_id, COUNT(*) AS n FROM keks GROUP BY giver_id ORDER BY n DESC LIMIT ?'
   ),
   totalKeks: db.prepare('SELECT COUNT(*) AS n FROM keks'),
+
+  // Who this person keks the most.
+  gaveTo: db.prepare(
+    `SELECT author_id AS id, COUNT(*) AS n FROM keks
+     WHERE giver_id = ? AND author_id IS NOT NULL
+     GROUP BY author_id ORDER BY n DESC LIMIT ?`
+  ),
+  // Who keks this person the most.
+  receivedFrom: db.prepare(
+    `SELECT giver_id AS id, COUNT(*) AS n FROM keks
+     WHERE author_id = ? GROUP BY giver_id ORDER BY n DESC LIMIT ?`
+  ),
+  receivedTotal: db.prepare('SELECT COUNT(*) AS n FROM keks WHERE author_id = ?'),
 
   getProgress: db.prepare('SELECT * FROM progress WHERE channel_id = ?'),
   allProgress: db.prepare('SELECT * FROM progress'),
