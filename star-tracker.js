@@ -26,6 +26,11 @@ const { stmts } = require('./kek-db');
 const STAR_EMOJI_ID = process.env.STAR_EMOJI_ID;
 const COUNT_SELF_STARS = false;
 
+// Discord's integrations UI only exposes permissions on the parent command, so
+// restricting a single subcommand has to happen here. Kept in .env rather than
+// hardcoded, since the repo is public.
+const OWNER_ID = process.env.OWNER_ID;
+
 // ─── Storage ─────────────────────────────────────────────────────────────────
 // Everything lives in keks.db, shared with the backfill. WAL mode means both
 // processes can work at once, so there's nothing to merge and nothing to clobber.
@@ -128,6 +133,11 @@ async function handleStarsCommand(interaction) {
   }
 
   if (sub === 'inspect') {
+    if (!OWNER_ID || interaction.user.id !== OWNER_ID) {
+      await interaction.reply({ content: "You can't use this command.", ephemeral: true });
+      return;
+    }
+
     const target = interaction.options.getUser('target') || interaction.user;
 
     const givenTotal = stmts.countFor.get(target.id).n;
