@@ -70,6 +70,12 @@ const starsCommand = new SlashCommandBuilder()
   )
   .addSubcommand((sub) =>
     sub.setName('top').setDescription('Leaderboard of the biggest kek givers')
+  )
+  .addSubcommand((sub) =>
+    sub
+      .setName('inspect')
+      .setDescription('Who someone keks, and who keks them')
+      .addUserOption((opt) => opt.setName('target').setDescription('Who to inspect').setRequired(false))
   );
 
 async function handleStarsCommand(interaction) {
@@ -115,6 +121,42 @@ async function handleStarsCommand(interaction) {
     const embed = new EmbedBuilder()
       .setTitle('Top kek givers')
       .addFields(fields)
+      .setColor(0xf1c40f);
+
+    await interaction.reply({ embeds: [embed] });
+    return;
+  }
+
+  if (sub === 'inspect') {
+    const target = interaction.options.getUser('target') || interaction.user;
+
+    const givenTotal = stmts.countFor.get(target.id).n;
+    const gotTotal = stmts.receivedTotal.get(target.id).n;
+
+    const gaveTo = stmts.gaveTo.all(target.id, 10);
+    const gotFrom = stmts.receivedFrom.all(target.id, 10);
+
+    if (!givenTotal && !gotTotal) {
+      await interaction.reply({ content: `No keks recorded for ${target.username}.`, ephemeral: true });
+      return;
+    }
+
+    // Percentages are of that person's own total, so each column sums to at
+    // most 100 and the two columns are independent of each other.
+    const fmt = (rows, total) =>
+      rows.length
+        ? rows
+            .map((r, i) => `**${i + 1}.** <@${r.id}> \u2014 ${r.n} (${((r.n / total) * 100).toFixed(1)}%)`)
+            .join('\n')
+        : '\u2014';
+
+    const embed = new EmbedBuilder()
+      .setTitle(`Kek profile: ${target.username}`)
+      .setThumbnail(target.displayAvatarURL())
+      .addFields(
+        { name: `Keks most \u2014 ${givenTotal} given`, value: fmt(gaveTo, givenTotal), inline: true },
+        { name: `Top supporters \u2014 ${gotTotal} received`, value: fmt(gotFrom, gotTotal), inline: true }
+      )
       .setColor(0xf1c40f);
 
     await interaction.reply({ embeds: [embed] });
