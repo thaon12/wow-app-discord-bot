@@ -4,8 +4,8 @@
  * Posts a log message when someone leaves the server. If they were kicked or
  * banned, a second line underneath says what happened and who did it.
  *
- * Needs in .env:
- *   MEMBER_LOG_CHANNEL_ID=<channel id to post in>
+ * Posts in the server's System Messages channel (the one Discord uses for
+ * join notifications). Set MEMBER_LOG_CHANNEL_ID in .env only to override that.
  *
  * Needs on the bot:
  *   - GuildMembers intent (already on in index.js)
@@ -50,10 +50,14 @@ async function findModAction(guild, userId) {
 
 async function handleMemberRemove(member) {
   try {
-    if (!LOG_CHANNEL_ID) return;
-    const channel = await member.client.channels.fetch(LOG_CHANNEL_ID).catch(() => null);
+    const channelId = LOG_CHANNEL_ID || member.guild.systemChannelId;
+    if (!channelId) {
+      console.error('member log: no System Messages channel set and no MEMBER_LOG_CHANNEL_ID');
+      return;
+    }
+    const channel = await member.client.channels.fetch(channelId).catch(() => null);
     if (!channel) {
-      console.error('member log: MEMBER_LOG_CHANNEL_ID not found');
+      console.error('member log: log channel not found');
       return;
     }
 
