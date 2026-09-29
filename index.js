@@ -18,6 +18,7 @@ require('dotenv').config();
 
 const { attachStarTracker, handleStarsCommand } = require('./star-tracker');
 const { attachMemberLog } = require('./member-log');
+const { attachOutboxNotifier } = require('./outbox-notifier');
 
 const client = new Client({
   intents: [
@@ -25,6 +26,10 @@ const client = new Client({
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.GuildMessageReactions,
+    // Needed so message.content is populated for the outbox notifier — this
+    // must also be turned on under Bot > Privileged Gateway Intents in the
+    // Discord Developer Portal, or the bot fails to log in.
+    GatewayIntentBits.MessageContent,
   ],
   // Required so reactions on messages outside the cache still fire events.
   // GuildMember/User let leave events fire for members who aren't cached.
@@ -33,6 +38,7 @@ const client = new Client({
 
 attachStarTracker(client);
 attachMemberLog(client);
+attachOutboxNotifier(client);
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -415,26 +421,48 @@ async function handleArchive(interaction) {
   const guild = interaction.guild;
   const channel = interaction.channel;
 
-  // Remove any remaining member-level permission overwrites (applicant)
-  const memberOverwrites = channel.permissionOverwrites.cache.filter((o) => o.type === 1);
-  for (const overwrite of memberOverwrites.values()) {
-    await channel.permissionOverwrites.delete(overwrite.id);
+  try {
+    // Remove any remaining member-level permission overwrites (applicant)
+    const memberOverwrites = channel.permissionOverwrites.cache.filter((o) => o.type === 1);
+    for (const overwrite of memberOverwrites.values()) {
+      await channel.permissionOverwrites.delete(overwrite.id);
+    }
+
+    // Find an archive category with room. Discord caps categories at 50 channels,
+    // so once one fills up, overflow into a numbered sibling category instead of
+    // failing (and crashing the bot) on every archive attempt.
+    const archiveCategories = guild.channels.cache
+      .filter(
+        (c) =>
+          c.type === ChannelType.GuildCategory &&
+          c.name.toLowerCase().startsWith(ARCHIVE_CATEGORY_NAME.toLowerCase())
+      )
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    let archiveCategory = archiveCategories.find((c) => c.children.cache.size < 50);
+
+    if (!archiveCategory) {
+      const name =
+        archiveCategories.size === 0
+          ? ARCHIVE_CATEGORY_NAME
+          : `${ARCHIVE_CATEGORY_NAME} ${archiveCategories.size + 1}`;
+      archiveCategory = await guild.channels.create({
+        name,
+        type: ChannelType.GuildCategory,
+      });
+    }
+
+    await channel.setParent(archiveCategory.id, { lockPermissions: false });
+    await interaction.deferUpdate();
+  } catch (err) {
+    console.error('Failed to archive channel:', err);
+    const payload = { content: '❌ Failed to archive this channel. Please notify an admin.', flags: MessageFlags.Ephemeral };
+    if (interaction.deferred || interaction.replied) {
+      await interaction.followUp(payload);
+    } else {
+      await interaction.reply(payload);
+    }
   }
-
-  // Find or create the archive category
-  let archiveCategory = guild.channels.cache.find(
-    (c) => c.type === ChannelType.GuildCategory && c.name.toLowerCase() === ARCHIVE_CATEGORY_NAME.toLowerCase()
-  );
-
-  if (!archiveCategory) {
-    archiveCategory = await guild.channels.create({
-      name: ARCHIVE_CATEGORY_NAME,
-      type: ChannelType.GuildCategory,
-    });
-  }
-
-  await channel.setParent(archiveCategory.id, { lockPermissions: false });
-  await interaction.deferUpdate();
 }
 
 // ─── Poll commands ───────────────────────────────────────────────────────────
