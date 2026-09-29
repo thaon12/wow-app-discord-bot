@@ -65,8 +65,8 @@ async function handleMemberRemove(member) {
 
     const embed = new EmbedBuilder()
       .setColor(0xed4245)
-      .setDescription(`**${user.tag} has left the server.**`)
-      .addFields({ name: 'ID', value: user.id })
+      .setDescription(`${user.tag} has left the server.`)
+      .addFields({ name: 'ID', value: `${user.id}\n<@${user.id}>` })
       .setThumbnail(user.displayAvatarURL({ size: 256 }))
       .setTimestamp();
 
