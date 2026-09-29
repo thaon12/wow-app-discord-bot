@@ -17,6 +17,7 @@ const {
 require('dotenv').config();
 
 const { attachStarTracker, handleStarsCommand } = require('./star-tracker');
+const { attachMemberLog } = require('./member-log');
 
 const client = new Client({
   intents: [
@@ -26,10 +27,12 @@ const client = new Client({
     GatewayIntentBits.GuildMessageReactions,
   ],
   // Required so reactions on messages outside the cache still fire events.
-  partials: [Partials.Message, Partials.Channel, Partials.Reaction],
+  // GuildMember/User let leave events fire for members who aren't cached.
+  partials: [Partials.Message, Partials.Channel, Partials.Reaction, Partials.GuildMember, Partials.User],
 });
 
 attachStarTracker(client);
+attachMemberLog(client);
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
