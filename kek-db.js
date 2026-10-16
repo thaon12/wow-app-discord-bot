@@ -97,6 +97,13 @@ const stmts = {
   ),
   receivedTotal: db.prepare('SELECT COUNT(*) AS n FROM keks WHERE author_id = ?'),
 
+  // /stars channel: totals and leaderboards scoped to one channel.
+  channelTotal: db.prepare('SELECT COUNT(*) AS n FROM keks WHERE channel_id = ?'),
+  channelTopGivers: db.prepare(
+    `SELECT giver_id AS id, COUNT(*) AS n FROM keks
+     WHERE channel_id = ? GROUP BY giver_id ORDER BY n DESC LIMIT ?`
+  ),
+
   getProgress: db.prepare('SELECT * FROM progress WHERE channel_id = ?'),
   allProgress: db.prepare('SELECT * FROM progress'),
   setCursor: db.prepare(

@@ -20,7 +20,7 @@
  * bot's cache (which is most of them) never fire the event at all.
  */
 
-const { EmbedBuilder, SlashCommandBuilder } = require('discord.js');
+const { ChannelType, EmbedBuilder, SlashCommandBuilder } = require('discord.js');
 const { stmts } = require('./kek-db');
 
 const STAR_EMOJI_ID = process.env.STAR_EMOJI_ID;
@@ -78,6 +78,24 @@ const starsCommand = new SlashCommandBuilder()
   )
   .addSubcommand((sub) =>
     sub
+      .setName('channel')
+      .setDescription('Kek total and top givers for one channel')
+      .addChannelOption((opt) =>
+        opt
+          .setName('target')
+          .setDescription('Which channel (defaults to this one)')
+          .addChannelTypes(
+            ChannelType.GuildText,
+            ChannelType.GuildAnnouncement,
+            ChannelType.PublicThread,
+            ChannelType.PrivateThread,
+            ChannelType.AnnouncementThread
+          )
+          .setRequired(false)
+      )
+  )
+  .addSubcommand((sub) =>
+    sub
       .setName('inspect')
       .setDescription('Who someone keks, and who keks them')
       .addUserOption((opt) => opt.setName('target').setDescription('Who to inspect').setRequired(false))
@@ -126,6 +144,30 @@ async function handleStarsCommand(interaction) {
     const embed = new EmbedBuilder()
       .setTitle('Top kek givers')
       .addFields(fields)
+      .setColor(0xf1c40f);
+
+    await interaction.reply({ embeds: [embed] });
+    return;
+  }
+
+  if (sub === 'channel') {
+    const channel = interaction.options.getChannel('target') || interaction.channel;
+    const total = stmts.channelTotal.get(channel.id).n;
+
+    if (!total) {
+      await interaction.reply({ content: `No keks recorded in <#${channel.id}> yet.`, ephemeral: true });
+      return;
+    }
+
+    const top = stmts.channelTopGivers.all(channel.id, 10);
+    const list = top.map((r, i) => `**${i + 1}.** <@${r.id}> \u2014 ${r.n}`).join('\n');
+
+    const embed = new EmbedBuilder()
+      .setTitle(`Keks in #${channel.name}`)
+      .addFields(
+        { name: 'Total keks', value: String(total), inline: false },
+        { name: 'Top givers', value: list, inline: false }
+      )
       .setColor(0xf1c40f);
 
     await interaction.reply({ embeds: [embed] });
