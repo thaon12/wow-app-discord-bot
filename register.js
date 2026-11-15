@@ -7,6 +7,7 @@
 
 const { REST, Routes, SlashCommandBuilder } = require('discord.js');
 const { starsCommand } = require('./star-tracker');
+const { archiveCategoryCommand } = require('./archive-config');
 require('dotenv').config();
 
 const commands = [
@@ -35,6 +36,7 @@ const commands = [
       opt.setName('role').setDescription('The role to check against').setRequired(true),
     ),
   starsCommand,
+  archiveCategoryCommand,
 ].map((cmd) => cmd.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(process.env.BOT_TOKEN);
