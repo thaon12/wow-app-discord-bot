@@ -19,6 +19,7 @@ require('dotenv').config();
 const { attachStarTracker, handleStarsCommand } = require('./star-tracker');
 const { attachMemberLog } = require('./member-log');
 const { attachOutboxNotifier } = require('./outbox-notifier');
+const { handleArchiveCategoryCommand, getArchiveCategoryId } = require('./archive-config');
 
 const client = new Client({
   intents: [
@@ -49,7 +50,6 @@ const ARCHIVE_BUTTON_ID = 'archive_ticket';
 const REOPEN_BUTTON_ID_PREFIX = 'reopen_ticket_';
 const CLOSE_CONFIRM_BUTTON_ID = 'close_confirm';
 const CLOSE_CANCEL_BUTTON_ID = 'close_cancel';
-const ARCHIVE_CATEGORY_NAME = 'anniversary-trial-archive';
 
 // ─── Ready ───────────────────────────────────────────────────────────────────
 
@@ -125,6 +125,12 @@ client.on('interactionCreate', async (interaction) => {
   // /missing — show who in a role didn't vote
   if (interaction.isChatInputCommand() && interaction.commandName === 'missing') {
     await handleMissing(interaction);
+    return;
+  }
+
+  // /archive_category — set where archived applications go
+  if (interaction.isChatInputCommand() && interaction.commandName === 'archive_category') {
+    await handleArchiveCategoryCommand(interaction);
     return;
   }
 
@@ -421,12 +427,28 @@ async function handleArchive(interaction) {
   const guild = interaction.guild;
   const channel = interaction.channel;
 
+  // An archive category has to be set with /archive_category first. Check this
+  // before touching permissions so nothing changes if it isn't set.
+  const configuredId = getArchiveCategoryId(guild.id);
+  const configured = configuredId ? guild.channels.cache.get(configuredId) : null;
+  if (!configured) {
+    await interaction.reply({
+      content: configuredId
+        ? '❌ The archive category was deleted. A GM needs to set a new one with `/archive_category set`.'
+        : '❌ No archive category is set. A GM needs to set one with `/archive_category set`.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
   try {
     // Remove any remaining member-level permission overwrites (applicant)
     const memberOverwrites = channel.permissionOverwrites.cache.filter((o) => o.type === 1);
     for (const overwrite of memberOverwrites.values()) {
       await channel.permissionOverwrites.delete(overwrite.id);
     }
+
+    const baseName = configured.name;
 
     // Find an archive category with room. Discord caps categories at 50 channels,
     // so once one fills up, overflow into a numbered sibling category instead of
@@ -435,17 +457,19 @@ async function handleArchive(interaction) {
       .filter(
         (c) =>
           c.type === ChannelType.GuildCategory &&
-          c.name.toLowerCase().startsWith(ARCHIVE_CATEGORY_NAME.toLowerCase())
+          c.name.toLowerCase().startsWith(baseName.toLowerCase())
       )
-      .sort((a, b) => a.name.localeCompare(b.name));
+      // The configured category is always tried first, then its overflow siblings.
+      .sort((a, b) => {
+        if (a.id === configured.id) return -1;
+        if (b.id === configured.id) return 1;
+        return a.name.localeCompare(b.name);
+      });
 
     let archiveCategory = archiveCategories.find((c) => c.children.cache.size < 50);
 
     if (!archiveCategory) {
-      const name =
-        archiveCategories.size === 0
-          ? ARCHIVE_CATEGORY_NAME
-          : `${ARCHIVE_CATEGORY_NAME} ${archiveCategories.size + 1}`;
+      const name = `${baseName} ${archiveCategories.size + 1}`;
       archiveCategory = await guild.channels.create({
         name,
         type: ChannelType.GuildCategory,
